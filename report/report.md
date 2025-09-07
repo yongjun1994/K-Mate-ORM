@@ -86,7 +86,6 @@ TypeORM은 TypeScript와 JavaScript를 위한 가장 강력한 ORM 중 하나로
 ### 4.1 데이터베이스 모듈 설정
 
 ```typescript
-// src/database/database.module.ts
 @Global()
 @Module({
   imports: [
@@ -113,7 +112,6 @@ export class DatabaseModule {}
 ### 4.2 K-Buzz 엔티티 구현
 
 ```typescript
-// src/features/posts/entities/k-buzz.entity.ts
 @Entity('k_buzz')
 @Index(['author_id'])
 export class KBuzz {
@@ -147,7 +145,6 @@ export class KBuzz {
 ### 4.3 서비스 레이어 구현
 
 ```typescript
-// src/features/posts/k-buzz.service.ts
 @Injectable()
 export class KBuzzService {
   constructor(
@@ -215,7 +212,6 @@ export class KBuzzService {
 ### 4.4 DTO 구현
 
 ```typescript
-// src/features/posts/dto/create-k-buzz.dto.ts
 import { IsString, IsNotEmpty, MaxLength } from 'class-validator';
 
 export class CreateKBuzzDto {
@@ -229,7 +225,6 @@ export class CreateKBuzzDto {
   content: string;
 }
 
-// src/features/posts/dto/update-k-buzz.dto.ts
 import { PartialType } from '@nestjs/mapped-types';
 import { CreateKBuzzDto } from './create-k-buzz.dto';
 
