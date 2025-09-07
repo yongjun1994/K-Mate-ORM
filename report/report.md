@@ -9,7 +9,7 @@
 **K-Mate**는 한국 여행 정보 공유 플랫폼으로, K-Buzz 게시판을 핵심 기능으로 하는 웹 애플리케이션입니다.
 
 ### 1.2 주요 기능
-- **K-Buzz 게시판**: 트렌드 게시글과 커뮤니티 게시글 관리
+- **K-Buzz 게시판**: 기본적인 게시글 CRUD 기능 (제목, 내용, 조회수)
 - **사용자 인증**: Google OAuth 2.0 기반 인증 시스템
 - **상호작용**: 좋아요, 스크랩, 댓글, 북마크 기능
 - **팁 시스템**: 버스 가이드, 지하철 가이드, 맛집 예약 가이드
@@ -115,9 +115,6 @@ export class DatabaseModule {}
 ```typescript
 // src/features/posts/entities/k-buzz.entity.ts
 @Entity('k_buzz')
-@Index(['post_type'])
-@Index(['trend_week', 'trend_rank'])
-@Index(['category'])
 @Index(['author_id'])
 export class KBuzz {
   @PrimaryGeneratedColumn({ type: 'bigint', unsigned: true })
@@ -129,23 +126,8 @@ export class KBuzz {
   @Column('longtext')
   content: string;
 
-  @Column({ type: 'enum', enum: ['trend', 'community'] })
-  post_type: 'trend' | 'community';
-
-  @Column({ type: 'enum', enum: ['travel_tip', 'food_review', 'cafe_review'], nullable: true })
-  category: 'travel_tip' | 'food_review' | 'cafe_review';
-
-  @Column({ nullable: true })
-  trend_week: number;
-
-  @Column({ nullable: true })
-  trend_rank: number;
-
   @Column({ default: 0 })
   view_count: number;
-
-  @Column({ default: 0 })
-  scrap_count: number;
 
   @CreateDateColumn()
   created_at: Date;
@@ -159,15 +141,6 @@ export class KBuzz {
 
   @Column({ type: 'bigint', unsigned: true })
   author_id: number;
-
-  @OneToMany(() => Comment, comment => comment.k_buzz_post)
-  comments: Comment[];
-
-  @OneToMany(() => Like, like => like.k_buzz_post)
-  likes: Like[];
-
-  @OneToMany(() => Scrap, scrap => scrap.k_buzz_post)
-  scraps: Scrap[];
 }
 ```
 
@@ -182,71 +155,85 @@ export class KBuzzService {
     private kBuzzRepository: Repository<KBuzz>,
   ) {}
 
-  async create(createKBuzzDto: CreateKBuzzDto, userId: number): Promise<KBuzz> {
+  async create(createKBuzzDto: CreateKBuzzDto, authorId: number): Promise<KBuzz> {
     const kBuzz = this.kBuzzRepository.create({
       ...createKBuzzDto,
-      author_id: userId,
+      author_id: authorId,
     });
+
+    return await this.kBuzzRepository.save(kBuzz);
+  }
+
+  async findAll(): Promise<KBuzz[]> {
+    return await this.kBuzzRepository.find({
+      relations: ['author'],
+      order: {
+        created_at: 'DESC',
+      },
+    });
+  }
+
+  async findOne(id: number): Promise<KBuzz> {
+    const kBuzz = await this.kBuzzRepository.findOne({
+      where: { id },
+      relations: ['author'],
+    });
+
+    if (!kBuzz) {
+      throw new NotFoundException(`K-Buzz post with ID ${id} not found`);
+    }
+
+    await this.kBuzzRepository.increment({ id }, 'view_count', 1);
+
+    return kBuzz;
+  }
+
+  async update(id: number, updateKBuzzDto: UpdateKBuzzDto, userId: number): Promise<KBuzz> {
+    const kBuzz = await this.findOne(id);
+
+    if (kBuzz.author_id !== userId) {
+      throw new ForbiddenException('You can only update your own posts');
+    }
+
+    Object.assign(kBuzz, updateKBuzzDto);
     
     return await this.kBuzzRepository.save(kBuzz);
   }
 
-  async findAll(page: number = 1, limit: number = 10): Promise<PaginatedResult<KBuzz>> {
-    const [items, total] = await this.kBuzzRepository.findAndCount({
-      relations: ['author'],
-      order: { created_at: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+  async remove(id: number, userId: number): Promise<void> {
+    const kBuzz = await this.findOne(id);
 
-    return {
-      items,
-      total,
-      page,
-      limit,
-      totalPages: Math.ceil(total / limit),
-    };
-  }
+    if (kBuzz.author_id !== userId) {
+      throw new ForbiddenException('You can only delete your own posts');
+    }
 
-  async findTrendPosts(week: number): Promise<KBuzz[]> {
-    return await this.kBuzzRepository.find({
-      where: { 
-        post_type: 'trend',
-        trend_week: week 
-      },
-      relations: ['author'],
-      order: { trend_rank: 'ASC' },
-    });
+    await this.kBuzzRepository.remove(kBuzz);
   }
 }
 ```
 
-### 4.4 복잡한 쿼리 예시
+### 4.4 DTO 구현
 
 ```typescript
-// src/features/posts/k-buzz.service.ts
-async getPostStatistics(): Promise<PostStatistics> {
-  const queryBuilder = this.kBuzzRepository.createQueryBuilder('kbuzz');
-  
-  const result = await queryBuilder
-    .select([
-      'kbuzz.post_type',
-      'COUNT(*) as count',
-      'AVG(kbuzz.view_count) as avg_views',
-      'SUM(kbuzz.scrap_count) as total_scraps'
-    ])
-    .groupBy('kbuzz.post_type')
-    .getRawMany();
+// src/features/posts/dto/create-k-buzz.dto.ts
+import { IsString, IsNotEmpty, MaxLength } from 'class-validator';
 
-  return result.reduce((acc, row) => {
-    acc[row.post_type] = {
-      count: parseInt(row.count),
-      avgViews: parseFloat(row.avg_views),
-      totalScraps: parseInt(row.total_scraps),
-    };
-    return acc;
-  }, {});
+export class CreateKBuzzDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  title: string;
+
+  @IsString()
+  @IsNotEmpty()
+  content: string;
 }
+
+// src/features/posts/dto/update-k-buzz.dto.ts
+import { PartialType } from '@nestjs/mapped-types';
+import { CreateKBuzzDto } from './create-k-buzz.dto';
+
+export class UpdateKBuzzDto extends PartialType(CreateKBuzzDto) {}
 ```
 
 ---
