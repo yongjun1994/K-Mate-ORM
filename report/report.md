@@ -86,23 +86,31 @@ TypeORM은 TypeScript와 JavaScript를 위한 가장 강력한 ORM 중 하나로
 ### 4.1 데이터베이스 모듈 설정
 
 ```typescript
-@Global()
+// src/database/database.module.ts
+import { Global, Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+// 모든 엔티티들을 import하여 TypeORM이 인식할 수 있도록 함
+import { User, KBuzz, Tip, Comment, Like, Scrap, Place, Bookmark } from '../features';
+
+@Global() // 전역 모듈로 설정하여 다른 모듈에서 자동으로 사용 가능
 @Module({
   imports: [
+    // TypeORM 비동기 설정: 환경변수를 사용하여 데이터베이스 연결 설정
     TypeOrmModule.forRootAsync({
-      imports: [ConfigModule],
+      imports: [ConfigModule], // 환경 변수 설정 모듈 import
       useFactory: (configService: ConfigService) => ({
-        type: 'mysql',
-        host: configService.get('database.host'),
-        port: configService.get('database.port'),
-        username: configService.get('database.user'),
-        password: configService.get('database.password'),
-        database: configService.get('database.database'),
-        entities: [User, KBuzz, Tip, Comment, Like, Scrap, Place, Bookmark],
-        synchronize: configService.get('app.nodeEnv') === 'development',
-        logging: configService.get('app.nodeEnv') === 'development',
+        type: 'mysql', // 데이터베이스 타입 지정
+        host: configService.get('database.host'), // DB 호스트 주소
+        port: configService.get('database.port'), // DB 포트 번호
+        username: configService.get('database.user'), // DB 사용자명
+        password: configService.get('database.password'), // DB 비밀번호
+        database: configService.get('database.database'), // DB 이름
+        entities: [User, KBuzz, Tip, Comment, Like, Scrap, Place, Bookmark], // 사용할 엔티티들 등록
+        synchronize: configService.get('app.nodeEnv') === 'development', // 개발 환경에서만 자동 스키마 동기화
+        logging: configService.get('app.nodeEnv') === 'development', // 개발 환경에서만 SQL 로깅 활성화
       }),
-      inject: [ConfigService],
+      inject: [ConfigService], // ConfigService를 의존성 주입으로 사용
     }),
   ],
 })
@@ -112,31 +120,43 @@ export class DatabaseModule {}
 ### 4.2 K-Buzz 엔티티 구현
 
 ```typescript
-@Entity('k_buzz')
-@Index(['author_id'])
+// src/features/posts/entities/k-buzz.entity.ts
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn, Index } from 'typeorm';
+import { User } from '../../users/entities/user.entity';
+
+@Entity('k_buzz') // 데이터베이스 테이블명을 'k_buzz'로 지정
+@Index(['author_id']) // 작성자 ID로 검색할 때 성능 향상을 위한 인덱스
 export class KBuzz {
+  // 기본키: 자동 증가하는 큰 정수형 (unsigned)
   @PrimaryGeneratedColumn({ type: 'bigint', unsigned: true })
   id: number;
 
+  // 게시글 제목 (필수 필드)
   @Column()
   title: string;
 
+  // 게시글 내용 (longtext 타입으로 긴 텍스트 저장 가능)
   @Column('longtext')
   content: string;
 
+  // 조회수 (기본값: 0)
   @Column({ default: 0 })
   view_count: number;
 
+  // 생성일시 (자동으로 현재 시간 설정)
   @CreateDateColumn()
   created_at: Date;
 
+  // 수정일시 (업데이트 시 자동으로 현재 시간 설정)
   @UpdateDateColumn()
   updated_at: Date;
 
+  // 다대일 관계: 여러 게시글이 하나의 사용자에 속함
   @ManyToOne(() => User, user => user.k_buzz_posts)
-  @JoinColumn({ name: 'author_id' })
+  @JoinColumn({ name: 'author_id' }) // 외래키 컬럼명 지정
   author: User;
 
+  // 작성자 ID (외래키)
   @Column({ type: 'bigint', unsigned: true })
   author_id: number;
 }
@@ -145,65 +165,90 @@ export class KBuzz {
 ### 4.3 서비스 레이어 구현
 
 ```typescript
-@Injectable()
+// src/features/posts/k-buzz.service.ts
+import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { KBuzz } from './entities/k-buzz.entity';
+import { CreateKBuzzDto } from './dto/create-k-buzz.dto';
+import { UpdateKBuzzDto } from './dto/update-k-buzz.dto';
+
+@Injectable() // NestJS의 의존성 주입을 위한 데코레이터
 export class KBuzzService {
   constructor(
-    @InjectRepository(KBuzz)
+    @InjectRepository(KBuzz) // KBuzz 엔티티 Repository 주입
     private kBuzzRepository: Repository<KBuzz>,
   ) {}
 
+  // 새 게시글 생성
   async create(createKBuzzDto: CreateKBuzzDto, authorId: number): Promise<KBuzz> {
+    // DTO와 작성자 ID를 결합하여 엔티티 인스턴스 생성
     const kBuzz = this.kBuzzRepository.create({
-      ...createKBuzzDto,
-      author_id: authorId,
+      ...createKBuzzDto, // DTO의 모든 속성 펼침
+      author_id: authorId, // 작성자 ID 설정
     });
 
+    // 데이터베이스에 저장하고 반환
     return await this.kBuzzRepository.save(kBuzz);
   }
 
+  // 모든 게시글 조회 (최신순 정렬)
   async findAll(): Promise<KBuzz[]> {
     return await this.kBuzzRepository.find({
-      relations: ['author'],
+      relations: ['author'], // 작성자 정보도 함께 조회 (JOIN)
       order: {
-        created_at: 'DESC',
+        created_at: 'DESC', // 생성일시 내림차순 정렬 (최신순)
       },
     });
   }
 
+  // 특정 게시글 조회 (조회수 증가 포함)
   async findOne(id: number): Promise<KBuzz> {
+    // ID로 게시글 조회
     const kBuzz = await this.kBuzzRepository.findOne({
       where: { id },
-      relations: ['author'],
+      relations: ['author'], // 작성자 정보도 함께 조회
     });
 
+    // 게시글이 존재하지 않으면 예외 발생
     if (!kBuzz) {
       throw new NotFoundException(`K-Buzz post with ID ${id} not found`);
     }
 
+    // 조회수 1 증가
     await this.kBuzzRepository.increment({ id }, 'view_count', 1);
 
     return kBuzz;
   }
 
+  // 게시글 수정 (작성자만 가능)
   async update(id: number, updateKBuzzDto: UpdateKBuzzDto, userId: number): Promise<KBuzz> {
+    // 게시글 존재 여부 확인
     const kBuzz = await this.findOne(id);
 
+    // 작성자가 아닌 경우 수정 권한 없음
     if (kBuzz.author_id !== userId) {
       throw new ForbiddenException('You can only update your own posts');
     }
 
+    // DTO의 속성들을 기존 엔티티에 병합
     Object.assign(kBuzz, updateKBuzzDto);
     
+    // 수정된 게시글 저장하고 반환
     return await this.kBuzzRepository.save(kBuzz);
   }
 
+  // 게시글 삭제 (작성자만 가능)
   async remove(id: number, userId: number): Promise<void> {
+    // 게시글 존재 여부 확인
     const kBuzz = await this.findOne(id);
 
+    // 작성자가 아닌 경우 삭제 권한 없음
     if (kBuzz.author_id !== userId) {
       throw new ForbiddenException('You can only delete your own posts');
     }
 
+    // 게시글 삭제
     await this.kBuzzRepository.remove(kBuzz);
   }
 }
@@ -212,28 +257,248 @@ export class KBuzzService {
 ### 4.4 DTO 구현
 
 ```typescript
+// src/features/posts/dto/create-k-buzz.dto.ts
 import { IsString, IsNotEmpty, MaxLength } from 'class-validator';
 
+// K-Buzz 게시글 생성을 위한 DTO (Data Transfer Object)
 export class CreateKBuzzDto {
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(200)
+  // 게시글 제목: 문자열, 필수, 최대 200자
+  @IsString() // 문자열 타입 검증
+  @IsNotEmpty() // 빈 값이 아닌지 검증
+  @MaxLength(200) // 최대 길이 200자 제한
   title: string;
 
-  @IsString()
-  @IsNotEmpty()
+  // 게시글 내용: 문자열, 필수
+  @IsString() // 문자열 타입 검증
+  @IsNotEmpty() // 빈 값이 아닌지 검증
   content: string;
 }
 
+// src/features/posts/dto/update-k-buzz.dto.ts
 import { PartialType } from '@nestjs/mapped-types';
 import { CreateKBuzzDto } from './create-k-buzz.dto';
 
+// K-Buzz 게시글 수정을 위한 DTO
+// PartialType을 사용하여 CreateKBuzzDto의 모든 속성을 선택적(optional)으로 만듦
 export class UpdateKBuzzDto extends PartialType(CreateKBuzzDto) {}
 ```
 
 ---
 
-## 5. TypeORM 사용 경험
+## 5. NestJS 의존성 주입 (Dependency Injection) 흐름
+
+### 5.1 의존성 주입이란?
+**의존성 주입(Dependency Injection)**은 객체가 필요한 의존성을 외부에서 주입받는 디자인 패턴입니다. NestJS는 내장된 IoC(Inversion of Control) 컨테이너를 통해 의존성 주입을 자동으로 관리합니다.
+
+### 5.2 의존성 주입 흐름 분석
+
+#### 5.2.1 애플리케이션 부트스트랩 과정
+```typescript
+// main.ts - 애플리케이션 진입점
+async function bootstrap() {
+  // 1. AppModule을 루트 모듈로 NestJS 애플리케이션 생성
+  const app = await NestFactory.create(AppModule);
+  // 2. 전역 파이프, 가드, 필터 등 설정
+  app.useGlobalPipes(new ValidationPipe({...}));
+  app.useGlobalFilters(new HttpExceptionFilter());
+  // 3. 서버 시작
+  await app.listen(process.env.PORT || 3000);
+}
+```
+
+#### 5.2.2 모듈 계층 구조
+```typescript
+// app.module.ts - 루트 모듈
+@Module({
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }), // 전역 설정 모듈
+    DatabaseModule,                           // 전역 데이터베이스 모듈
+    AuthModule,                              // 인증 모듈
+    PostsModule,                             // 게시글 모듈
+    // ... 기타 기능 모듈들
+  ],
+})
+export class AppModule {}
+```
+
+#### 5.2.3 전역 모듈 설정
+```typescript
+// database.module.ts - 전역 데이터베이스 모듈
+@Global() // 전역 모듈로 설정
+@Module({
+  imports: [
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule], // ConfigService 의존성 주입
+      useFactory: (configService: ConfigService) => ({
+        // 데이터베이스 연결 설정
+        type: 'mysql',
+        host: configService.get('database.host'),
+        // ... 기타 설정
+        entities: [User, KBuzz, Tip, Comment, Like, Scrap, Place, Bookmark],
+      }),
+      inject: [ConfigService], // ConfigService 주입
+    }),
+  ],
+})
+export class DatabaseModule {}
+```
+
+#### 5.2.4 기능 모듈에서 Repository 주입
+```typescript
+// posts.module.ts - 게시글 모듈
+@Module({
+  imports: [
+    // KBuzz, User 엔티티 Repository 등록
+    TypeOrmModule.forFeature([KBuzz, User])
+  ],
+  controllers: [KBuzzController],
+  providers: [KBuzzService],
+  exports: [KBuzzService], // 다른 모듈에서 사용 가능하도록 export
+})
+export class PostsModule {}
+```
+
+#### 5.2.5 서비스에서 Repository 주입
+```typescript
+// k-buzz.service.ts - 서비스 레이어
+@Injectable() // 의존성 주입 가능한 클래스로 표시
+export class KBuzzService {
+  constructor(
+    // @InjectRepository 데코레이터로 Repository 주입
+    @InjectRepository(KBuzz)
+    private kBuzzRepository: Repository<KBuzz>,
+  ) {}
+  
+  // Repository를 사용한 비즈니스 로직
+  async create(createKBuzzDto: CreateKBuzzDto, authorId: number): Promise<KBuzz> {
+    const kBuzz = this.kBuzzRepository.create({
+      ...createKBuzzDto,
+      author_id: authorId,
+    });
+    return await this.kBuzzRepository.save(kBuzz);
+  }
+}
+```
+
+#### 5.2.6 컨트롤러에서 서비스 주입
+```typescript
+// k-buzz.controller.ts - 컨트롤러 레이어
+@Controller('k-buzz')
+export class KBuzzController {
+  constructor(
+    // 생성자 주입으로 서비스 인스턴스 주입
+    private readonly kBuzzService: KBuzzService
+  ) {}
+  
+  @Post()
+  @UseGuards(JwtAuthGuard) // 가드도 의존성 주입으로 관리
+  create(@Body() createKBuzzDto: CreateKBuzzDto, @Request() req) {
+    return this.kBuzzService.create(createKBuzzDto, req.user.id);
+  }
+}
+```
+
+### 5.3 의존성 주입의 장점
+
+#### 5.3.1 코드 결합도 감소
+- **Before**: 하드코딩된 의존성
+```typescript
+class KBuzzService {
+  private repository = new KBuzzRepository(); // 강한 결합
+}
+```
+
+- **After**: 의존성 주입
+```typescript
+class KBuzzService {
+  constructor(
+    @InjectRepository(KBuzz)
+    private kBuzzRepository: Repository<KBuzz>, // 느슨한 결합
+  ) {}
+}
+```
+
+#### 5.3.2 테스트 용이성
+```typescript
+// 테스트에서 Mock Repository 주입 가능
+const mockRepository = {
+  create: jest.fn(),
+  save: jest.fn(),
+  find: jest.fn(),
+};
+
+const service = new KBuzzService(mockRepository);
+```
+
+#### 5.3.3 생명주기 관리
+- **Singleton**: 기본적으로 모든 프로바이더는 싱글톤
+- **Request-scoped**: 요청마다 새로운 인스턴스 생성
+- **Transient**: 매번 새로운 인스턴스 생성
+
+### 5.4 의존성 주입 흐름 다이어그램
+
+```
+1. 애플리케이션 시작
+   ↓
+2. AppModule 로드
+   ↓
+3. 하위 모듈들 순차 로드
+   - ConfigModule (전역)
+   - DatabaseModule (전역)
+   - AuthModule
+   - PostsModule
+   ↓
+4. 각 모듈의 프로바이더 등록
+   - Services
+   - Repositories
+   - Guards
+   - Strategies
+   ↓
+5. 의존성 그래프 생성 및 해결
+   ↓
+6. 인스턴스 생성 및 주입
+   ↓
+7. 애플리케이션 실행 준비 완료
+```
+
+### 5.5 실제 의존성 주입 예시
+
+#### 5.5.1 인증 서비스 의존성 주입
+```typescript
+// auth.service.ts
+@Injectable()
+export class AuthService {
+  constructor(
+    private readonly jwt: JwtService,           // JWT 서비스 주입
+    @InjectRepository(User)                     // User Repository 주입
+    private readonly userRepository: Repository<User>
+  ) {}
+}
+```
+
+#### 5.5.2 가드에서 서비스 주입
+```typescript
+// jwt-auth.guard.ts
+@Injectable()
+export class JwtAuthGuard extends AuthGuard('jwt') {
+  constructor(
+    private readonly authService: AuthService   // AuthService 주입
+  ) {
+    super();
+  }
+}
+```
+
+### 5.6 의존성 주입의 핵심 원칙
+
+1. **Inversion of Control (IoC)**: 의존성 생성과 관리의 제어권을 프레임워크에 위임
+2. **Single Responsibility**: 각 클래스는 하나의 책임만 가짐
+3. **Dependency Inversion**: 구체적인 구현이 아닌 추상화에 의존
+4. **Loose Coupling**: 클래스 간의 결합도를 낮춤
+
+---
+
+## 6. TypeORM 사용 경험
 
 #### 긍정적인 경험
 1. **개발 생산성**: SQL 작성 없이 빠른 개발 가능
